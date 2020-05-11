@@ -40,12 +40,15 @@ fn main() {
         .load()
         .unwrap();
 
+    // gui vars
     let mut frames: f32 = 0.;
     let mut offset: f32 = 0.0;
+    let mut coldown = false;
 
     let versions_clone = versions.clone();
 
     let loading_thread = thread::spawn(move || -> Result<(), Error> {
+        thread::sleep_ms(35000);
         // get stable releases
         let data: String =
             http_tools::http_request("https://api.github.com/repos/Anuken/Mindustry/releases")?;
@@ -94,9 +97,14 @@ fn main() {
 
         // event processing
         window.get_mouse_pos(MouseMode::Clamp).map(|mouse| {
-            if window.get_mouse_down(MouseButton::Left) {
+            if window.get_mouse_down(MouseButton::Left) && !coldown {
                 drawing.process_mouse(mouse.0, mouse.1);
                 println!("elapsed: {}", drawing.last_click.elapsed().as_secs_f32());
+                coldown = true;
+            }
+
+            if (frames % 3.0) <= 0.0 {
+                coldown = false;
             }
         });
 
@@ -111,12 +119,21 @@ fn main() {
         let mut idx: f32 = -27.0;
 
         if versions.lock().len() <= 0 {
-            drawing.draw_text(
-                &format!("Loading versions..."),
-                Location2::new(75.0, 240.0),
-                Color::new(255, 255, 255, 255),
-                15.0,
-            );
+            if frames >= 30.0 {
+                drawing.draw_text(
+                    &format!("The download took longer than expected check out console for details"),
+                    Location2::new(10.0, 240.0),
+                    Color::new(255, 255, 255, 255),
+                    8.0,
+                );
+            } else {
+                drawing.draw_text(
+                    &format!("Loading versions..."),
+                    Location2::new(75.0, 240.0),
+                    Color::new(255, 255, 255, 255),
+                    15.0,
+                );
+            }
         } else {
             for version in versions.lock().iter() {
                 let mut release_color = Color::new(255, 110, 110, 110); // if stable
@@ -141,13 +158,10 @@ fn main() {
         }
 
         // draw scrollbar
-        if drawing.draw_button(
-            "",
-            Location4::new(300.0, ((offset - offset * 2.0) / 6.0) % 480.0, 16.0, 32.0),
-            Color::new(255, 255, 110, 200),
-        ) {
-            offset = drawing.
-        }
+        drawing.draw_square(
+            Location4::new(300.0, ((offset - offset * 2.0) / 6.0) % 480.0, 4.0, idx / 8.0),
+            Color::new(255, 110, 110, 110),
+        );
 
         /*
         let result = nfd::open_pick_folder(None).unwrap_or_else(|e| {
