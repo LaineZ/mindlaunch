@@ -263,7 +263,7 @@ fn main() {
         drawing.draw_text(
             &frame,
             Location2::new(20.0, 20.0),
-            Color::new(255, 0, 0, 255),
+            Color::new(255, 0, 255, 0),
             12.0,
         );
 
