@@ -14,8 +14,13 @@ use raqote::{
     DrawOptions, DrawTarget, PathBuilder, Point, SolidSource, Source, StrokeStyle, Transform,
 };
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::Arc;
-use std::{io::Error, thread, time};
+use std::{
+    fs::{self, File},
+    io::{self, Error},
+    thread, time,
+};
 use webbrowser;
 
 const WIDTH: usize = 854;
@@ -30,16 +35,22 @@ struct Release {
 }
 
 struct State {
-    version_loading_error: bool
+    version_loading_error: bool,
+    is_downloading: bool,
+    download_size: f32,
+    filename: String,
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut options = WindowOptions::default();
     options.resize = false;
 
     let versions = Arc::new(Mutex::new(Vec::new()));
     let state = Arc::new(Mutex::new(State {
-        version_loading_error: false
+        version_loading_error: false,
+        is_downloading: false,
+        download_size: 0.0,
+        filename: String::new(),
     }));
 
     let mut window = Window::new("MindLaunch 1.0", WIDTH, HEIGHT, options).unwrap();
@@ -53,6 +64,7 @@ fn main() {
     let mut frames: f32 = 0.;
     let mut offset: f32 = 0.0;
     let mut coldown = false;
+
     fn load_versions(versions_clone: Arc<Mutex<Vec<Release>>>, state_clone: Arc<Mutex<State>>) {
         versions_clone.lock().clear();
         thread::spawn(move || -> Result<(), Error> {
@@ -60,7 +72,8 @@ fn main() {
             // get stable releases
             let data: String =
                 http_tools::http_request("https://api.github.com/repos/Anuken/Mindustry/releases")?;
-            let data_json: Result<Vec<models::release::Root>, serde_json::error::Error> = serde_json::from_str(&data);
+            let data_json: Result<Vec<models::release::Root>, serde_json::error::Error> =
+                serde_json::from_str(&data);
             match data_json {
                 Ok(json) => {
                     for version in json.iter() {
@@ -104,10 +117,12 @@ fn main() {
     let mut settings = config::Config::default();
     settings
         // Add in `./Settings.toml`
-        .merge(config::File::with_name("Settings")).unwrap()
+        .merge(config::File::with_name("Settings"))
+        .unwrap()
         // Add in settings from the environment (with a prefix of APP)
         // Eg.. `APP_DEBUG=1 ./target/app` would set the `debug` key
-        .merge(config::Environment::with_prefix("APP")).unwrap();
+        .merge(config::Environment::with_prefix("APP"))
+        .unwrap();
 
     let mut settings_hash = settings.try_into::<HashMap<String, String>>().unwrap();
 
@@ -170,26 +185,38 @@ fn main() {
             }
         }
         // Utils
-        if drawing.draw_button("Reload", Location4::new(310.0, 450.0, 50.0, 24.0), Color::new(255, 100, 110, 100)) {
+        if drawing.draw_button(
+            "Reload",
+            Location4::new(310.0, 450.0, 50.0, 24.0),
+            Color::new(255, 100, 110, 100),
+        ) {
             load_versions(versions.clone(), state.clone());
         }
-        drawing.draw_text("Click here to change Mindustry installation location: ", Location2::new(365.0, 440.0), Color::new(255, 255, 255, 255), 15.0);
-        if drawing.draw_button(&format!("{}", settings_hash.get("path").unwrap()), Location4::new(365.0, 450.0, 460.0, 24.0), Color::new(255, 100, 100, 100)) {
+        drawing.draw_text(
+            "Click here to change Mindustry installation location: ",
+            Location2::new(365.0, 440.0),
+            Color::new(255, 255, 255, 255),
+            15.0,
+        );
+        if drawing.draw_button(
+            &format!("{}", settings_hash.get("path").unwrap()),
+            Location4::new(365.0, 450.0, 460.0, 24.0),
+            Color::new(255, 100, 100, 100),
+        ) {
             let result = nfd::open_pick_folder(None).unwrap_or_else(|e| {
                 panic!(e);
             });
-    
+
             match result {
-                Response::Okay(file_path) => { 
+                Response::Okay(file_path) => {
                     println!("File path = {:?}", file_path);
                     settings_hash.insert("path".to_string(), file_path);
-            },
+                }
                 Response::Cancel => println!("User canceled"),
                 _ => (),
             }
         }
         // Drawing options
-        
 
         // offset of scrllbox
         let mut idx: f32 = -27.0;
@@ -203,10 +230,13 @@ fn main() {
                     14.0,
                 );
 
-                if drawing.draw_button("Try again", Location4::new(25.0, 260.0, 60.0, 24.0), Color::new(255, 100, 120, 100)) {
+                if drawing.draw_button(
+                    "Try again",
+                    Location4::new(25.0, 260.0, 60.0, 24.0),
+                    Color::new(255, 100, 120, 100),
+                ) {
                     load_versions(versions.clone(), state.clone());
                 }
-
             } else {
                 drawing.draw_text(
                     "Loading versions...",
@@ -231,7 +261,52 @@ fn main() {
                 );
                 //install button
                 let baseloc_install = Location4::new(baseloc.x + 200.0, baseloc.y, 50.0, 25.0);
-                drawing.draw_button("INSTALL", baseloc_install, Color::new(255, 110, 110, 200));
+                if drawing.draw_button("INSTALL", baseloc_install, Color::new(255, 110, 110, 200)) {
+                    let download_url = version.download_url.clone();
+                    let version_string = version.name.clone();
+                    let version_tag = version.tag_name.clone();
+
+                    if !state.lock().is_downloading {
+                        {
+                            let state = state.clone();
+
+                            thread::spawn(move || -> Result<(), std::io::Error> {
+                                println!("Starting reader...");
+                                state.lock().is_downloading = true;
+
+                                let response = ureq::get(download_url.as_str())
+                                    .set("Transfer-Encoding", "chunked")
+                                    .timeout_connect(5_000)
+                                    .timeout_read(1_000)
+                                    .call();
+
+
+                                println!("Got response!");
+
+                                state.lock().filename = format!("{}.jar", version_string);
+
+                                let len = response
+                                    .header("content-length")
+                                    .unwrap_or("0")
+                                    .parse::<i32>()
+                                    .unwrap();
+                                
+                                let mut buffer = File::create(state.lock().filename.clone())?;
+
+                                println!("Done computing");
+
+                                let mut reader = response.into_reader();
+
+                                println!("Copying");
+                                io::copy(&mut reader, &mut buffer)?;
+
+                                println!("Done!");
+                                state.lock().is_downloading = false;
+                                Ok(())
+                            });
+                        }
+                    }
+                }
                 //unistall
                 let baseloc_install = Location4::new(baseloc.x + 250.0, baseloc.y, 50.0, 25.0);
                 drawing.draw_button("DELETE", baseloc_install, Color::new(255, 200, 110, 200));
@@ -248,6 +323,33 @@ fn main() {
             ),
             Color::new(255, 110, 110, 110),
         );
+
+        // Download progress
+        {
+            let state_clone = state.clone();
+            match state_clone.try_lock() {
+                Some(value) => {
+                    let metadata = fs::metadata(value.filename.clone())?;
+
+                    drawing.draw_text(
+                        &format!(
+                            "Downloading... {} MiB/{} MiB",
+                            metadata.len() / 1024 / 1024, value.download_size
+                        ),
+                        Location2::new(310.0, 410.0),
+                        Color::new(255, 255, 255, 255),
+                        15.0,
+                    );
+                }
+                None => {
+                    println!("не удалось заблочить =(");
+                }
+            }
+            drawing.draw_square(
+                Location4::new(310.0, 420.0, 540.0, 5.0),
+                Color::new(255, 100, 100, 100),
+            )
+        }
 
         // lock ~60 FPS
         std::thread::sleep(std::time::Duration::from_millis(15));
@@ -276,4 +378,5 @@ fn main() {
             .update_with_buffer(drawing.dt.get_data(), size.0, size.1)
             .unwrap();
     }
+    Ok(())
 }
